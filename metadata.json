@@ -1,0 +1,6 @@
+{
+  "name": "FAULT//LINE",
+  "description": "Interactive IT fault diagnosis simulation for Level 3 IT students featuring six connected troubleshooting cases and a realistic simulated Windows command terminal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
