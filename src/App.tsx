@@ -7,6 +7,9 @@ import {
   Network,
   MessageSquare,
   X,
+  HelpCircle,
+  Lightbulb,
+  Terminal as TerminalIcon,
 } from 'lucide-react';
 import { SCENARIOS } from './data/scenarios';
 import { DEMO_SCENARIO } from './data/demoScenario';
@@ -23,6 +26,7 @@ import {
   executeTerminalCommand,
   makeLine,
 } from './engine/terminalEngine';
+import { detectNearMissCommand } from './engine/commandAssist';
 import { calculateScenarioScore } from './engine/scoring';
 import { TopBar } from './components/TopBar';
 import { BriefingScreen } from './components/BriefingScreen';
@@ -38,6 +42,7 @@ import { FinalScoreScreen } from './components/FinalScoreScreen';
 
 const STORAGE_KEY = 'faultline_progress_v1';
 const PLAYER_NAME_KEY = 'faultline_player_name_v1';
+const STUCK_IDLE_MS = 60_000;
 
 function buildInitialLines(scenario: ScenarioConfig): TerminalLine[] {
   const m = scenario.initialMachine;
@@ -126,6 +131,16 @@ export default function App() {
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
   const [incomingMessage, setIncomingMessage] = useState<ColleagueMessage | null>(null);
 
+  // Two-strike command coach pop-up (strict syntax: never auto-executes)
+  const nearMissCountsRef = useRef<Record<string, number>>({});
+  const [commandCoach, setCommandCoach] = useState<{
+    strike: 1 | 2;
+    suggestedCommand: string;
+  } | null>(null);
+
+  // "Stuck?" inactivity clue pop-up
+  const [showStuckPopup, setShowStuckPopup] = useState(false);
+
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(progressMap));
@@ -206,6 +221,60 @@ export default function App() {
     }
   }, [activeMessages, activeView]);
 
+  const nextUnrevealedHint = activeScenario.hints.find(
+    (h) => !activeProgress.revealedHintLevels.includes(h.level)
+  );
+
+  // Inactivity watcher for the "Stuck?" clue pop-up
+  useEffect(() => {
+    const canWatchIdle =
+      activeView === 'workspace' &&
+      !isDemoActive &&
+      activeProgress.status !== 'solved' &&
+      !isStreaming &&
+      !showCommandRef &&
+      !debriefScenarioId;
+
+    if (!canWatchIdle) {
+      setShowStuckPopup(false);
+      return;
+    }
+
+    if (showStuckPopup) return;
+
+    let timerId = window.setTimeout(() => {
+      setShowStuckPopup(true);
+    }, STUCK_IDLE_MS);
+
+    const resetIdleTimer = () => {
+      window.clearTimeout(timerId);
+      timerId = window.setTimeout(() => {
+        setShowStuckPopup(true);
+      }, STUCK_IDLE_MS);
+    };
+
+    window.addEventListener('keydown', resetIdleTimer);
+    window.addEventListener('pointerdown', resetIdleTimer);
+
+    return () => {
+      window.clearTimeout(timerId);
+      window.removeEventListener('keydown', resetIdleTimer);
+      window.removeEventListener('pointerdown', resetIdleTimer);
+    };
+  }, [
+    activeView,
+    isDemoActive,
+    activeScenario.id,
+    activeProgress.status,
+    activeProgress.commandHistory.length,
+    activeProgress.completedRepairIds.length,
+    activeDeckTab,
+    isStreaming,
+    showCommandRef,
+    debriefScenarioId,
+    showStuckPopup,
+  ]);
+
   const updateProgressById = (
     targetId: string,
     isDemoTarget: boolean,
@@ -233,6 +302,9 @@ export default function App() {
 
   const handleStartDemo = () => {
     cancelActiveStream(false);
+    nearMissCountsRef.current = {};
+    setCommandCoach(null);
+    setShowStuckPopup(false);
     setDemoProgress(createInitialProgress(DEMO_SCENARIO, true));
     setIsDemoActive(true);
     setIncomingMessage(null);
@@ -243,6 +315,9 @@ export default function App() {
 
   const handleExitDemoToCase1 = () => {
     cancelActiveStream(false);
+    nearMissCountsRef.current = {};
+    setCommandCoach(null);
+    setShowStuckPopup(false);
     setIsDemoActive(false);
     setIncomingMessage(null);
     setDebriefScenarioId(null);
@@ -259,6 +334,7 @@ export default function App() {
     const curr = activeProgress;
 
     const trimmed = rawCommand.trim();
+    setShowStuckPopup(false);
     const promptLine = makeLine('prompt', `${curr.machine.currentDir}>${rawCommand}`);
     const res = executeTerminalCommand(
       rawCommand,
@@ -266,6 +342,23 @@ export default function App() {
       scenario,
       curr.completedRepairIds
     );
+
+    if (res.commandCategory === 'invalid') {
+      const suggestion = detectNearMissCommand(trimmed);
+      if (suggestion) {
+        const nextCount = (nearMissCountsRef.current[suggestion.key] || 0) + 1;
+        nearMissCountsRef.current[suggestion.key] = nextCount;
+        setCommandCoach({
+          strike: nextCount >= 2 ? 2 : 1,
+          suggestedCommand: suggestion.suggestedCommand,
+        });
+      } else {
+        setCommandCoach(null);
+      }
+    } else {
+      nearMissCountsRef.current = {};
+      setCommandCoach(null);
+    }
 
     if (res.commandCategory === 'clear') {
       updateProgressById(targetId, isDemoTarget, (c) => ({
@@ -512,6 +605,9 @@ export default function App() {
 
   const handleResetCurrentCase = () => {
     cancelActiveStream(false);
+    nearMissCountsRef.current = {};
+    setCommandCoach(null);
+    setShowStuckPopup(false);
     setIncomingMessage(null);
     if (isDemoActive) {
       setDemoProgress(createInitialProgress(DEMO_SCENARIO, true));
@@ -527,6 +623,9 @@ export default function App() {
   const handleResetAll = () => {
     cancelActiveStream(false);
     seenMessageIdsRef.current.clear();
+    nearMissCountsRef.current = {};
+    setCommandCoach(null);
+    setShowStuckPopup(false);
     setIncomingMessage(null);
     const fresh = createInitialProgressMap();
     setProgressMap(fresh);
@@ -543,6 +642,9 @@ export default function App() {
 
   const handleSelectScenario = (scenarioId: string) => {
     cancelActiveStream(false);
+    nearMissCountsRef.current = {};
+    setCommandCoach(null);
+    setShowStuckPopup(false);
     setIncomingMessage(null);
     setIsDemoActive(false);
     setActiveScenarioId(scenarioId);
@@ -552,6 +654,8 @@ export default function App() {
 
   const handleNavigate = (view: ActiveView) => {
     cancelActiveStream(false);
+    setCommandCoach(null);
+    setShowStuckPopup(false);
     setActiveView(view);
   };
 
@@ -818,6 +922,148 @@ export default function App() {
               />
             </div>
           </div>
+
+          {/* Non-blocking Workspace Assistant Pop-Ups (Command Coach & Stuck? Clue) */}
+          {(commandCoach || showStuckPopup) && (
+            <div className="pointer-events-none fixed bottom-5 right-5 z-40 flex w-[calc(100vw-2.5rem)] max-w-sm flex-col gap-3">
+              {commandCoach && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="pointer-events-auto rounded-lg border border-amber-500/45 bg-[#141C2A] p-4 shadow-xl shadow-black/50"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <TerminalIcon
+                        className="mt-0.5 h-4 w-4 text-amber-400 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        {commandCoach.strike === 1 ? (
+                          <>
+                            <p className="font-display text-sm font-semibold text-[#F8FAFC]">
+                              Try again
+                            </p>
+                            <p className="mt-1 text-xs leading-relaxed text-[#CBD5E1]">
+                              You&apos;re on the right track — check your spelling, spacing, or flags and try again.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="font-display text-sm font-semibold text-[#F8FAFC]">
+                              Psst.. I think you meant
+                            </p>
+                            <code className="mt-1.5 block rounded border border-[#2A3750] bg-[#0B0F17] px-2.5 py-1.5 font-mono text-xs text-amber-300 break-all">
+                              {commandCoach.suggestedCommand}
+                            </code>
+                            <p className="mt-1.5 text-[11px] text-[#94A3B8]">
+                              Type it into the command prompt to run it.
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCommandCoach(null)}
+                      aria-label="Dismiss command tip"
+                      className="rounded p-1 text-[#94A3B8] transition-colors hover:bg-[#1E2738] hover:text-[#F8FAFC] cursor-pointer shrink-0"
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showStuckPopup && (
+                <div
+                  role="dialog"
+                  aria-label="Need a clue?"
+                  className="pointer-events-auto rounded-lg border border-amber-500/50 bg-[#141C2A] p-4 shadow-xl shadow-black/50"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <HelpCircle
+                        className="mt-0.5 h-4 w-4 text-amber-400 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        <p className="font-display text-sm font-semibold text-[#F8FAFC]">
+                          Stuck?
+                        </p>
+                        {nextUnrevealedHint ? (
+                          <>
+                            <p className="mt-1 text-xs leading-relaxed text-[#CBD5E1]">
+                              Things have gone quiet on this host. Want a Tier {nextUnrevealedHint.level} clue for your next step for{' '}
+                              <span className="font-mono font-semibold text-amber-300">
+                                -{nextUnrevealedHint.cost} pts
+                              </span>
+                              ?
+                            </p>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleRevealHint(nextUnrevealedHint.level);
+                                  setActiveDeckTab('hints');
+                                  setShowStuckPopup(false);
+                                }}
+                                className="inline-flex items-center gap-1.5 rounded bg-amber-500 px-3 py-1.5 text-xs font-semibold text-[#0B0F17] transition-colors hover:bg-amber-400 cursor-pointer"
+                              >
+                                <Lightbulb className="h-3.5 w-3.5" aria-hidden="true" />
+                                <span>Give me a clue (-{nextUnrevealedHint.cost} pts)</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowStuckPopup(false)}
+                                className="rounded border border-[#2A3750] bg-[#111722] px-2.5 py-1.5 text-xs text-[#CBD5E1] transition-colors hover:bg-[#1E2738] cursor-pointer"
+                              >
+                                Keep thinking
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="mt-1 text-xs leading-relaxed text-[#CBD5E1]">
+                              All 3 clues for this case are already unlocked. Review your Hints tab or open the Command Guide for syntax.
+                            </p>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveDeckTab('hints');
+                                  setShowStuckPopup(false);
+                                }}
+                                className="inline-flex items-center gap-1.5 rounded bg-amber-500 px-3 py-1.5 text-xs font-semibold text-[#0B0F17] transition-colors hover:bg-amber-400 cursor-pointer"
+                              >
+                                <Lightbulb className="h-3.5 w-3.5" aria-hidden="true" />
+                                <span>View Hints</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowStuckPopup(false)}
+                                className="rounded border border-[#2A3750] bg-[#111722] px-2.5 py-1.5 text-xs text-[#CBD5E1] transition-colors hover:bg-[#1E2738] cursor-pointer"
+                              >
+                                Keep working
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowStuckPopup(false)}
+                      aria-label="Dismiss stuck prompt"
+                      className="rounded p-1 text-[#94A3B8] transition-colors hover:bg-[#1E2738] hover:text-[#F8FAFC] cursor-pointer shrink-0"
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </main>
       )}
 

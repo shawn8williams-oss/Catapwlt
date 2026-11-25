@@ -842,7 +842,8 @@ export function executeTerminalCommand(
     }
   } else if (cmd === 'arp') {
     if (argsLower[0] !== '-a') {
-      pushLines(['Usage: arp -a  (Displays current ARP entries)']);
+      commandCategory = 'invalid';
+      pushLines(['Usage: arp -a  (Displays current ARP entries)'], 'error');
     } else {
       pushLines([
         '',
@@ -859,7 +860,8 @@ export function executeTerminalCommand(
     }
   } else if (cmd === 'route') {
     if (argsLower[0] !== 'print') {
-      pushLines(['Usage: route print']);
+      commandCategory = 'invalid';
+      pushLines(['Usage: route print'], 'error');
     } else {
       const netAddr = getNetworkAddress(nextMachine.ipAddress, nextMachine.subnetMask);
       const bcast = getBroadcastAddress(nextMachine.ipAddress, nextMachine.subnetMask);
@@ -1499,6 +1501,7 @@ export function executeTerminalCommand(
       const norm = normalizeWinPath(nextMachine.currentDir, fileArg);
       const matchedKey = Object.keys(nextMachine.files).find((k) => k.toUpperCase() === norm);
       if (!matchedKey) {
+        commandCategory = 'invalid';
         pushLines([`The system cannot find the file specified: ${fileArg}`], 'error');
       } else {
         // Check NTFS DENY ACL for Case 4 Payroll_Exports!
